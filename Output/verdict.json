@@ -1,0 +1,12 @@
+{
+  "id": "fa_icga_fm",
+  "repo": "FA-ICGA-FM",
+  "sota": "descriptive",
+  "metric": "synthetic_best_auc=nan",
+  "level": "SMOKE-ONLY (synthetic data): pipeline verified end-to-end on 24 synthetic classes; best linear-probe AUC=nan (sklearn multi_class API fix pending re-run with eval.py fa8271c). Full real-data run requires APTOS 2023 FA+ICGA staged at /dartfs-hpc/scratch/f008pp2/data/aptos2023/. CORAL ordinal trained OK (ep30 loss=0.456). Attention/IQA/CAL checks passed. peak_vram=11GB.",
+  "updated": "2026-07-21",
+  "peak_vram_gb": 11,
+  "is_synthetic": true,
+  "discovery_job": "9063779",
+  "commit_eval_fix": "fa8271c"
+}
