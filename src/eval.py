@@ -44,8 +44,7 @@ def linear_probe_eval(train_feats, train_labels, test_feats, test_labels, n_clas
 
     Returns dict with auc, acc, f1, kappa.
     """
-    clf = LogisticRegression(max_iter=1000, C=1.0, solver="lbfgs",
-                              multi_class="multinomial")
+    clf = LogisticRegression(max_iter=1000, C=1.0, solver="lbfgs")
     clf.fit(train_feats, train_labels)
     preds = clf.predict(test_feats)
     proba = clf.predict_proba(test_feats)
@@ -99,8 +98,7 @@ def few_shot_eval(backbone, dataset_fn, n_shots_list, device, n_seeds=10,
                 continue
             sf = np.vstack(support_feats)
             sl = np.array(support_labels)
-            clf = LogisticRegression(max_iter=500, C=1.0, solver="lbfgs",
-                                     multi_class="multinomial")
+            clf = LogisticRegression(max_iter=500, C=1.0, solver="lbfgs")
             try:
                 clf.fit(sf, sl)
                 preds = clf.predict(test_feats)
