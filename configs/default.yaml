@@ -1,0 +1,9 @@
+study: fa_icga_fm
+data_root: ""
+epochs_mae: 400
+epochs_ft: 50
+batch: 32
+lr: 0.0001
+seed: 42
+fp16: true
+n_classes: 24
