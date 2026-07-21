@@ -552,3 +552,140 @@ class MTLModel(nn.Module):
             "quality":   self.quality_head(feat),
             "severity":  self.severity_head(feat),
         }
+
+
+# ─── GradCAM++ (H15) ──────────────────────────────────────────────────────────
+
+class GradCAMPP:
+    """Grad-CAM++ for multi-layer Conv visualization (H15)."""
+
+    def __init__(self, model, target_layer=None):
+        self.model = model
+        self.grads = []
+        self.acts  = []
+        self._hooks = []
+        if target_layer is None:
+            for m in model.modules():
+                if isinstance(m, nn.Conv2d):
+                    target_layer = m
+        if target_layer is not None:
+            self._hooks.append(
+                target_layer.register_forward_hook(
+                    lambda m, i, o: self.acts.append(o.detach())
+                )
+            )
+            self._hooks.append(
+                target_layer.register_backward_hook(
+                    lambda m, gi, go: self.grads.append(go[0].detach())
+                )
+            )
+
+    def compute(self, img_tensor, target_class=None):
+        self.grads.clear()
+        self.acts.clear()
+        self.model.eval()
+        out = self.model(img_tensor)
+        if isinstance(out, tuple):
+            out = out[0]
+        if target_class is None:
+            target_class = int(out.argmax(1).item())
+        self.model.zero_grad()
+        out[0, target_class].backward()
+        if not self.grads or not self.acts:
+            return None, target_class
+        g = self.grads[0]
+        a = self.acts[0]
+        g2 = g ** 2
+        g3 = g ** 3
+        denom = 2 * g2 + (a * g3).sum(dim=(2, 3), keepdim=True)
+        alpha = g2 / (denom + 1e-8)
+        weights = (alpha * F.relu(out[0, target_class].detach() * g)).sum(dim=(2, 3), keepdim=True)
+        cam = (weights * a).sum(dim=1).squeeze().relu()
+        cam = cam.cpu().numpy()
+        mn, mx = cam.min(), cam.max()
+        if mx > mn:
+            cam = (cam - mn) / (mx - mn)
+        return cam, target_class
+
+    def remove(self):
+        for h in self._hooks:
+            h.remove()
+
+
+# ─── Cross-attention FA/ICGA alignment (H18) ──────────────────────────────────
+
+class CrossAttentionFAICGA(nn.Module):
+    """Cross-attention spatial alignment between FA and ICGA feature streams (H18)."""
+
+    def __init__(self, feat_dim=768, num_heads=8):
+        super().__init__()
+        self.norm_fa   = nn.LayerNorm(feat_dim)
+        self.norm_icga = nn.LayerNorm(feat_dim)
+        self.attn = nn.MultiheadAttention(feat_dim, num_heads, batch_first=True)
+        self.proj = nn.Linear(feat_dim * 2, feat_dim)
+
+    def forward(self, fa_feat, icga_feat):
+        q = self.norm_fa(fa_feat).unsqueeze(1)
+        k = self.norm_icga(icga_feat).unsqueeze(1)
+        attn_out, _ = self.attn(q, k, k)
+        attn_out = attn_out.squeeze(1)
+        return self.proj(torch.cat([fa_feat + attn_out, icga_feat], dim=-1))
+
+
+# ─── ViT-FPN multi-scale (H22) ────────────────────────────────────────────────
+
+class ViTFPN(nn.Module):
+    """Feature Pyramid Network on ViT-B/16 intermediate layers (H22).
+
+    Taps token outputs at block indices 3, 6, 9, 12 (1-based).
+    """
+
+    TAP_INDICES = {3, 6, 9, 12}
+
+    def __init__(self, n_classes, pretrained=True, fpn_dim=256):
+        super().__init__()
+        self.backbone = timm.create_model(
+            "vit_base_patch16_224", pretrained=pretrained,
+            num_classes=0, global_pool=""
+        )
+        feat_dim = self.backbone.num_features
+        self.laterals = nn.ModuleList([
+            nn.Linear(feat_dim, fpn_dim) for _ in range(4)
+        ])
+        self.head = nn.Sequential(
+            nn.Linear(fpn_dim * 4, fpn_dim),
+            nn.GELU(),
+            nn.Linear(fpn_dim, n_classes),
+        )
+
+    def forward(self, x):
+        h = self.backbone.patch_embed(x)
+        if hasattr(self.backbone, "cls_token"):
+            cls = self.backbone.cls_token.expand(h.shape[0], -1, -1)
+            h = torch.cat([cls, h], dim=1)
+        if hasattr(self.backbone, "pos_embed"):
+            h = h + self.backbone.pos_embed
+        if hasattr(self.backbone, "pos_drop"):
+            h = self.backbone.pos_drop(h)
+        taps = []
+        for i, blk in enumerate(self.backbone.blocks, start=1):
+            h = blk(h)
+            if i in self.TAP_INDICES:
+                taps.append(h[:, 0])
+        while len(taps) < 4:
+            taps.append(taps[-1] if taps else h[:, 0])
+        lat = [self.laterals[j](taps[j]) for j in range(4)]
+        return self.head(torch.cat(lat, dim=-1))
+
+    def features(self, x):
+        h = self.backbone.patch_embed(x)
+        if hasattr(self.backbone, "cls_token"):
+            cls = self.backbone.cls_token.expand(h.shape[0], -1, -1)
+            h = torch.cat([cls, h], dim=1)
+        if hasattr(self.backbone, "pos_embed"):
+            h = h + self.backbone.pos_embed
+        if hasattr(self.backbone, "pos_drop"):
+            h = self.backbone.pos_drop(h)
+        for blk in self.backbone.blocks:
+            h = blk(h)
+        return h[:, 0]

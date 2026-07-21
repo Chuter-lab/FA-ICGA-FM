@@ -251,3 +251,55 @@ def vit_attention_rollout(model, img_tensor):
     if grid.max() > 0:
         grid /= grid.max()
     return grid
+
+
+def compute_ece(proba, labels, n_bins=10):
+    """Expected Calibration Error and reliability diagram data (H23).
+
+    proba: (N, C) softmax probabilities. labels: (N,) integer class indices.
+    Returns dict with ece, bin_confs, bin_accs, bin_counts.
+    """
+    confidences = proba.max(axis=1)
+    predictions = proba.argmax(axis=1)
+    correct     = (predictions == labels).astype(float)
+    bin_edges   = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_confs, bin_accs, bin_counts = [], [], []
+    ece = 0.0
+    n = max(len(labels), 1)
+    for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+        mask = (confidences >= lo) & (confidences < hi)
+        cnt  = mask.sum()
+        bin_counts.append(int(cnt))
+        if cnt == 0:
+            bin_confs.append(0.0)
+            bin_accs.append(0.0)
+        else:
+            bc = float(confidences[mask].mean())
+            ba = float(correct[mask].mean())
+            bin_confs.append(bc)
+            bin_accs.append(ba)
+            ece += (cnt / n) * abs(bc - ba)
+    return {"ece": float(ece), "bin_confs": bin_confs,
+            "bin_accs": bin_accs, "bin_counts": bin_counts}
+
+
+def compute_conformal_sets(proba, labels, cal_proba, cal_labels, alpha=0.05):
+    """Split-conformal prediction sets with coverage guarantee (H16).
+
+    Calibrates on cal_* and produces prediction sets on test proba.
+    Returns empirical coverage and mean set size.
+    """
+    scores = 1.0 - cal_proba[np.arange(len(cal_labels)), cal_labels]
+    n = len(cal_labels)
+    q_level = np.ceil((n + 1) * (1 - alpha)) / max(n, 1)
+    q_hat = float(np.quantile(scores, min(q_level, 1.0)))
+    sets = [(proba[i] >= 1.0 - q_hat).sum() for i in range(len(proba))]
+    covered = sum(
+        1 for i in range(len(labels)) if proba[i, labels[i]] >= 1.0 - q_hat
+    ) / max(len(labels), 1)
+    return {
+        "q_hat": q_hat,
+        "coverage": float(covered),
+        "mean_set_size": float(np.mean(sets)) if sets else float("nan"),
+        "target_coverage": 1.0 - alpha,
+    }
