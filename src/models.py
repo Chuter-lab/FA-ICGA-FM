@@ -415,6 +415,9 @@ class PhaseConditionedViT(nn.Module):
         phase_logits = self.phase_head(feat)
         return cls_logits, phase_logits
 
+    def features(self, x):
+        return self.backbone(x)
+
 
 # ─── CORAL ordinal head (E3) ──────────────────────────────────────────────────
 

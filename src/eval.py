@@ -32,6 +32,8 @@ def extract_features(backbone, loader, device, n_max=None):
                 f = backbone.encode_full(imgs)
             else:
                 f = backbone(imgs)
+            if isinstance(f, (tuple, list)):
+                f = f[0]
             if f.dim() > 2:
                 f = f[:, 0]
             feats.append(f.cpu().float())
