@@ -195,7 +195,14 @@ def load_ckpt(model, path):
     if not os.path.exists(path):
         return False
     sd = torch.load(path, map_location="cpu")
-    model.load_state_dict(sd.get("state_dict", sd), strict=False)
+    state = sd.get("state_dict", sd)
+    try:
+        model.load_state_dict(state, strict=False)
+    except RuntimeError:
+        own = model.state_dict()
+        filtered = {k: v for k, v in state.items()
+                    if k in own and v.shape == own[k].shape}
+        model.load_state_dict(filtered, strict=False)
     return True
 
 
