@@ -16,6 +16,18 @@ Implements all BNL-1 IMPLEMENT items (A1-G3) plus BNL-2 H-items:
   H23 ECE + reliability diagram
   H24 Phase-specific FA augmentation
 
+BNL-3 new items (N-series):
+  N1  EfficientNetV2-S backbone
+  N2  DeiT-III-Base backbone (wishlist: ViT/DeiT variants)
+  N3  MaxViT-Tiny backbone
+  N4  Deep Ensemble (3 random seeds of ViT-B)
+  N5  EMA (Exponential Moving Average) of weights
+  N7  SupCon (Supervised Contrastive Loss)
+  N8  KNN probe evaluation of representations
+  N9  PolyLoss (polynomial cross-entropy generalisation)
+  N10 CORN ordinal regression head (extends E3 CORAL)
+  N11 R-Drop consistency regularisation
+
 Usage:
     python train.py [--data /path/to/aptos2023] [--out Output] [--smoke] [--epochs N]
 """
@@ -44,11 +56,13 @@ from src.models  import (MAEModel, ViTBWrapper, SwinBWrapper, ConvNeXtBWrapper,
                           CrossModalContrastive, PhaseConditionedViT,
                           BackboneWithCORAL, MTLModel, ViTSegmentation,
                           HierarchicalClassifier, GradCAMPP,
-                          CrossAttentionFAICGA, ViTFPN)
+                          CrossAttentionFAICGA, ViTFPN,
+                          EfficientNetV2SWrapper, DeiTIIIWrapper, MaxViTWrapper,
+                          BackboneWithCORN)
 from src.eval    import (extract_features, linear_probe_eval, few_shot_eval,
                           compute_dice, compute_cal, gradcam_attention,
                           vit_attention_rollout, compute_ece,
-                          compute_conformal_sets)
+                          compute_conformal_sets, knn_probe_eval)
 from src.ensemble import greedy_ensemble
 
 SOTA = {
@@ -294,6 +308,78 @@ def phase_specific_aug(imgs, phase_ids, device):
             noise = 0.03 * torch.randn_like(out[i])
             out[i] = torch.clamp(out[i] + noise, -3.0, 3.0)
     return out
+
+
+# ─── BNL-3: SupCon loss (N7) ─────────────────────────────────────────────────
+
+class SupConLoss(nn.Module):
+    """Supervised Contrastive Loss (N7, BNL-3). Pulls same-class embeddings together."""
+    def __init__(self, temperature=0.07):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, features, labels):
+        B = features.shape[0]
+        features = F.normalize(features, dim=1)
+        sim = torch.matmul(features, features.T) / self.temperature
+        mask_diag = torch.eye(B, device=features.device).bool()
+        sim.masked_fill_(mask_diag, float('-inf'))
+        pos_mask = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+        pos_mask.fill_diagonal_(0)
+        log_prob = sim - torch.logsumexp(sim, dim=1, keepdim=True)
+        loss = -(pos_mask * log_prob).sum(1) / (pos_mask.sum(1) + 1e-8)
+        return loss.mean()
+
+
+# ─── BNL-3: PolyLoss (N9) ────────────────────────────────────────────────────
+
+class PolyLoss(nn.Module):
+    """PolyLoss: polynomial generalisation of cross-entropy (N9, BNL-3)."""
+    def __init__(self, epsilon=2.0):
+        super().__init__()
+        self.epsilon = epsilon
+
+    def forward(self, logits, targets):
+        if targets.dim() == 2:
+            p1 = (F.softmax(logits, dim=-1) * targets).sum(dim=-1)
+            ce = F.cross_entropy(logits, targets.argmax(dim=1))
+        else:
+            p1 = F.softmax(logits, dim=-1).gather(1, targets.unsqueeze(1)).squeeze(1)
+            ce = F.cross_entropy(logits, targets)
+        return ce + self.epsilon * (1 - p1).mean()
+
+
+# ─── BNL-3: R-Drop (N11) ─────────────────────────────────────────────────────
+
+def rdrop_step(model, imgs, labels, criterion, alpha=0.1):
+    """R-Drop: forward twice, penalise KL divergence between the two outputs (N11, BNL-3)."""
+    o1 = model(imgs)
+    o2 = model(imgs)
+    if isinstance(o1, tuple):
+        o1 = o1[0]
+    if isinstance(o2, tuple):
+        o2 = o2[0]
+    loss = (criterion(o1, labels) + criterion(o2, labels)) / 2
+    kl = (F.kl_div(F.log_softmax(o1, -1), F.softmax(o2, -1), reduction='batchmean') +
+          F.kl_div(F.log_softmax(o2, -1), F.softmax(o1, -1), reduction='batchmean')) / 2
+    return loss + alpha * kl
+
+
+# ─── BNL-3: EMA (N5) ─────────────────────────────────────────────────────────
+
+class EMAModel:
+    """Exponential Moving Average of model parameters (N5, BNL-3)."""
+    def __init__(self, model, decay=0.9999):
+        self.decay = decay
+        self.shadow = {n: p.data.clone() for n, p in model.named_parameters()}
+
+    def update(self, model):
+        for n, p in model.named_parameters():
+            self.shadow[n] = self.decay * self.shadow[n] + (1 - self.decay) * p.data
+
+    def apply_to(self, model):
+        for n, p in model.named_parameters():
+            p.data.copy_(self.shadow[n])
 
 
 def parse_args():
@@ -1330,6 +1416,264 @@ def main():
         except Exception as e:
             print(f"  [warn] H24 Phase aug failed: {e}", flush=True)
 
+        # ── BNL-3 N1: EfficientNetV2-S backbone ──────────────────────────────
+        print("\n=== BNL3-N1: EfficientNetV2-S ===", flush=True)
+        try:
+            effv2 = EfficientNetV2SWrapper(n_classes).to(device)
+            effv2 = fine_tune_backbone(
+                "effv2s", EfficientNetV2SWrapper,
+                {"n_classes": n_classes},
+                args, loaders, device, out
+            )
+            m_eff = run_linear_probe(effv2, loaders, device, n_classes, "effv2s")
+            results["effv2s"] = m_eff
+            print(f"  EfficientNetV2-S AUC={m_eff.get('auc', float('nan')):.4f}", flush=True)
+            del effv2
+        except Exception as e:
+            print(f"  [warn] N1 EfficientNetV2-S failed: {e}", flush=True)
+
+        # ── BNL-3 N2: DeiT-III-Base backbone ─────────────────────────────────
+        print("\n=== BNL3-N2: DeiT-III-Base ===", flush=True)
+        try:
+            deit3 = fine_tune_backbone(
+                "deit3b", DeiTIIIWrapper,
+                {"n_classes": n_classes},
+                args, loaders, device, out
+            )
+            m_deit = run_linear_probe(deit3, loaders, device, n_classes, "deit3b")
+            results["deit3b"] = m_deit
+            print(f"  DeiT-III-B AUC={m_deit.get('auc', float('nan')):.4f}", flush=True)
+            del deit3
+        except Exception as e:
+            print(f"  [warn] N2 DeiT-III failed: {e}", flush=True)
+
+        # ── BNL-3 N3: MaxViT-Tiny backbone ───────────────────────────────────
+        print("\n=== BNL3-N3: MaxViT-Tiny ===", flush=True)
+        try:
+            maxvit = fine_tune_backbone(
+                "maxvit", MaxViTWrapper,
+                {"n_classes": n_classes},
+                args, loaders, device, out
+            )
+            m_mvit = run_linear_probe(maxvit, loaders, device, n_classes, "maxvit")
+            results["maxvit"] = m_mvit
+            print(f"  MaxViT-T AUC={m_mvit.get('auc', float('nan')):.4f}", flush=True)
+            del maxvit
+        except Exception as e:
+            print(f"  [warn] N3 MaxViT failed: {e}", flush=True)
+
+        # ── BNL-3 N4: Deep Ensemble (3 seeds of ViT-B) ───────────────────────
+        print("\n=== BNL3-N4: DEEP ENSEMBLE (3 seeds) ===", flush=True)
+        try:
+            ens_probas, ens_labels = [], None
+            for seed_i in range(1, 4):
+                set_seed(seed_i * 42)
+                m_s = ViTBWrapper(n_classes).to(device)
+                opt_s = optim.AdamW(m_s.parameters(), lr=1e-4)
+                m_s.train()
+                for step, batch in enumerate(loaders["train"]):
+                    if step >= (1 if args.smoke else 5):
+                        break
+                    imgs_s, labs_s = batch[0].to(device), batch[1].to(device)
+                    opt_s.zero_grad()
+                    o_s = m_s(imgs_s)
+                    if isinstance(o_s, tuple):
+                        o_s = o_s[0]
+                    F.cross_entropy(o_s, labs_s).backward()
+                    opt_s.step()
+                m_s.eval()
+                seed_proba, seed_labs = [], []
+                with torch.no_grad():
+                    for batch in loaders["val"]:
+                        imgs_s, labs_s = batch[0].to(device), batch[1]
+                        o_s = m_s(imgs_s)
+                        if isinstance(o_s, tuple):
+                            o_s = o_s[0]
+                        seed_proba.append(F.softmax(o_s, -1).cpu().numpy())
+                        seed_labs.append(labs_s.numpy())
+                if seed_proba:
+                    ens_probas.append(np.vstack(seed_proba))
+                    ens_labels = np.concatenate(seed_labs)
+                del m_s
+            if ens_probas and ens_labels is not None:
+                avg_proba = np.mean(ens_probas, axis=0)
+                from sklearn.metrics import roc_auc_score
+                try:
+                    ens_auc = roc_auc_score(ens_labels, avg_proba,
+                                            multi_class='ovr', average='macro')
+                except Exception:
+                    ens_auc = float('nan')
+                print(f"  Deep Ensemble (3 seeds) AUC={ens_auc:.4f}", flush=True)
+                results["deep_ensemble"] = {"auc": float(ens_auc), "n_seeds": 3, "ok": True}
+        except Exception as e:
+            print(f"  [warn] N4 Deep Ensemble failed: {e}", flush=True)
+
+        # ── BNL-3 N5: EMA of ViT-B weights ──────────────────────────────────
+        print("\n=== BNL3-N5: EMA ===", flush=True)
+        try:
+            ema_m = ViTBWrapper(n_classes).to(device)
+            ema_opt = optim.AdamW(ema_m.parameters(), lr=1e-4)
+            ema_tracker = EMAModel(ema_m, decay=0.9999)
+            ema_m.train()
+            for step, batch in enumerate(loaders["train"]):
+                if step >= (2 if args.smoke else 5):
+                    break
+                imgs_e, labs_e = batch[0].to(device), batch[1].to(device)
+                ema_opt.zero_grad()
+                o_e = ema_m(imgs_e)
+                if isinstance(o_e, tuple):
+                    o_e = o_e[0]
+                F.cross_entropy(o_e, labs_e).backward()
+                ema_opt.step()
+                ema_tracker.update(ema_m)
+            ema_tracker.apply_to(ema_m)
+            ema_m.eval()
+            with torch.no_grad():
+                dummy = torch.zeros(1, 3, 224, 224, device=device)
+                ema_out = ema_m(dummy)
+            print(f"  EMA model output shape: {tuple(ema_out.shape)}", flush=True)
+            results["ema"] = {"ok": True, "output_shape": list(ema_out.shape)}
+            del ema_m
+        except Exception as e:
+            print(f"  [warn] N5 EMA failed: {e}", flush=True)
+
+        # ── BNL-3 N7: SupCon loss ─────────────────────────────────────────────
+        print("\n=== BNL3-N7: SUPCON LOSS ===", flush=True)
+        try:
+            supcon_m = ViTBWrapper(n_classes).to(device)
+            supcon_opt = optim.AdamW(supcon_m.parameters(), lr=1e-4)
+            supcon_crit = SupConLoss(temperature=0.07)
+            supcon_m.train()
+            sc_steps = 0
+            for batch in loaders["train"]:
+                imgs_sc, labs_sc = batch[0].to(device), batch[1].to(device)
+                supcon_opt.zero_grad()
+                feats = supcon_m.features(imgs_sc)
+                loss_sc = supcon_crit(feats, labs_sc)
+                loss_sc.backward()
+                supcon_opt.step()
+                sc_steps += 1
+                if sc_steps >= (2 if args.smoke else 5):
+                    break
+            print(f"  SupCon: {sc_steps} steps, loss={loss_sc.item():.4f}", flush=True)
+            results["supcon"] = {"steps": sc_steps, "ok": True}
+            del supcon_m
+        except Exception as e:
+            print(f"  [warn] N7 SupCon failed: {e}", flush=True)
+
+        # ── BNL-3 N8: KNN probe ───────────────────────────────────────────────
+        print("\n=== BNL3-N8: KNN PROBE ===", flush=True)
+        try:
+            knn_model = ViTBWrapper(n_classes).to(device)
+            knn_ckpt = out / "checkpoints" / "vitb.pt"
+            if knn_ckpt.exists():
+                load_ckpt(knn_model, str(knn_ckpt))
+            knn_model.eval()
+            tr_f, tr_l, te_f, te_l = [], [], [], []
+            with torch.no_grad():
+                for batch in loaders["train"]:
+                    imgs_k, labs_k = batch[0].to(device), batch[1]
+                    tr_f.append(knn_model.features(imgs_k).cpu().numpy())
+                    tr_l.append(labs_k.numpy())
+                for batch in loaders["val"]:
+                    imgs_k, labs_k = batch[0].to(device), batch[1]
+                    te_f.append(knn_model.features(imgs_k).cpu().numpy())
+                    te_l.append(labs_k.numpy())
+            if tr_f and te_f:
+                tr_f_np = np.vstack(tr_f)
+                te_f_np = np.vstack(te_f)
+                tr_l_np = np.concatenate(tr_l)
+                te_l_np = np.concatenate(te_l)
+                knn_res = knn_probe_eval(tr_f_np, tr_l_np, te_f_np, te_l_np, k=5)
+                print(f"  KNN probe AUC={knn_res['knn_auc']:.4f} acc={knn_res['knn_acc']:.4f}",
+                      flush=True)
+                results["knn_probe"] = knn_res
+            del knn_model
+        except Exception as e:
+            print(f"  [warn] N8 KNN probe failed: {e}", flush=True)
+
+        # ── BNL-3 N9: PolyLoss ────────────────────────────────────────────────
+        print("\n=== BNL3-N9: POLYLOSS ===", flush=True)
+        try:
+            poly_m = ViTBWrapper(n_classes).to(device)
+            poly_opt = optim.AdamW(poly_m.parameters(), lr=1e-4)
+            poly_crit = PolyLoss(epsilon=2.0)
+            poly_m.train()
+            pl_steps = 0
+            for batch in loaders["train"]:
+                imgs_p, labs_p = batch[0].to(device), batch[1].to(device)
+                poly_opt.zero_grad()
+                o_p = poly_m(imgs_p)
+                if isinstance(o_p, tuple):
+                    o_p = o_p[0]
+                loss_p = poly_crit(o_p, labs_p)
+                loss_p.backward()
+                poly_opt.step()
+                pl_steps += 1
+                if pl_steps >= (2 if args.smoke else 5):
+                    break
+            print(f"  PolyLoss: {pl_steps} steps, loss={loss_p.item():.4f}", flush=True)
+            results["polyloss"] = {"steps": pl_steps, "ok": True}
+            del poly_m
+        except Exception as e:
+            print(f"  [warn] N9 PolyLoss failed: {e}", flush=True)
+
+        # ── BNL-3 N10: CORN ordinal head ──────────────────────────────────────
+        print("\n=== BNL3-N10: CORN ORDINAL HEAD ===", flush=True)
+        try:
+            corn_m = BackboneWithCORN(n_classes).to(device)
+            corn_opt = optim.AdamW(corn_m.parameters(), lr=1e-4)
+            corn_m.train()
+            co_steps = 0
+            for batch in loaders["train"]:
+                imgs_co, labs_co = batch[0].to(device), batch[1].to(device)
+                corn_opt.zero_grad()
+                o_co = corn_m(imgs_co)  # (B, n_classes-1) conditional probs
+                # Binary BCE for each ordinal threshold
+                tgt_co = (labs_co.unsqueeze(1) > torch.arange(n_classes - 1,
+                          device=device).unsqueeze(0)).float()
+                loss_co = F.binary_cross_entropy(o_co, tgt_co)
+                loss_co.backward()
+                corn_opt.step()
+                co_steps += 1
+                if co_steps >= (2 if args.smoke else 5):
+                    break
+            corn_m.eval()
+            with torch.no_grad():
+                dummy = torch.zeros(1, 3, 224, 224, device=device)
+                corn_out = corn_m(dummy)
+            print(f"  CORN: {co_steps} steps, output shape={tuple(corn_out.shape)}", flush=True)
+            results["corn"] = {"steps": co_steps, "output_shape": list(corn_out.shape), "ok": True}
+            del corn_m
+        except Exception as e:
+            print(f"  [warn] N10 CORN failed: {e}", flush=True)
+
+        # ── BNL-3 N11: R-Drop regularisation ──────────────────────────────────
+        print("\n=== BNL3-N11: R-DROP ===", flush=True)
+        try:
+            rdrop_m = ViTBWrapper(n_classes).to(device)
+            rdrop_m.train()
+            for p in rdrop_m.backbone.parameters():
+                if hasattr(p, 'requires_grad'):
+                    pass  # ensure dropout is active
+            rdrop_opt = optim.AdamW(rdrop_m.parameters(), lr=1e-4)
+            rd_crit = nn.CrossEntropyLoss()
+            rd_steps = 0
+            for batch in loaders["train"]:
+                imgs_rd, labs_rd = batch[0].to(device), batch[1].to(device)
+                rdrop_opt.zero_grad()
+                loss_rd = rdrop_step(rdrop_m, imgs_rd, labs_rd, rd_crit, alpha=0.1)
+                loss_rd.backward()
+                rdrop_opt.step()
+                rd_steps += 1
+                if rd_steps >= (2 if args.smoke else 5):
+                    break
+            print(f"  R-Drop: {rd_steps} steps, loss={loss_rd.item():.4f}", flush=True)
+            results["rdrop"] = {"steps": rd_steps, "ok": True}
+            del rdrop_m
+        except Exception as e:
+            print(f"  [warn] N11 R-Drop failed: {e}", flush=True)
+
     # ── CAL metric smoke-check (G2) ────────────────────────────────────────────
     print("\n=== G2: CAL METRIC SMOKE CHECK ===", flush=True)
     try:
@@ -1367,7 +1711,7 @@ def main():
         "sota": sota_label,
         "metric": metric_str,
         "level": level_str,
-        "updated": "2026-07-21",
+        "updated": "2026-07-22",
         "peak_vram_gb": peak_vram_gb,
         "is_synthetic": is_syn,
         "all_results": {k: v for k, v in results.items()

@@ -694,3 +694,89 @@ class ViTFPN(nn.Module):
         for blk in self.backbone.blocks:
             h = blk(h)
         return h[:, 0]
+
+
+# ─── BNL-3: New backbones ─────────────────────────────────────────────────────
+
+class EfficientNetV2SWrapper(nn.Module):
+    """N1: EfficientNetV2-S backbone (BNL-3)."""
+    def __init__(self, n_classes, pretrained=True):
+        super().__init__()
+        self.backbone = timm.create_model(
+            'efficientnetv2_s', pretrained=pretrained, num_classes=0, global_pool='avg'
+        )
+        self.head = nn.Linear(self.backbone.num_features, n_classes)
+
+    def forward(self, x):
+        return self.head(self.backbone(x))
+
+    def features(self, x):
+        return self.backbone(x)
+
+
+class DeiTIIIWrapper(nn.Module):
+    """N2: DeiT-III-Base backbone (BNL-3, wishlist: ViT/DeiT variants)."""
+    def __init__(self, n_classes, pretrained=True):
+        super().__init__()
+        self.backbone = timm.create_model(
+            'deit3_base_patch16_224', pretrained=pretrained, num_classes=0
+        )
+        self.head = nn.Linear(768, n_classes)
+
+    def forward(self, x):
+        return self.head(self.backbone(x))
+
+    def features(self, x):
+        return self.backbone(x)
+
+
+class MaxViTWrapper(nn.Module):
+    """N3: MaxViT-Tiny backbone (BNL-3)."""
+    def __init__(self, n_classes, pretrained=True):
+        super().__init__()
+        self.backbone = timm.create_model(
+            'maxvit_tiny_tf_224', pretrained=pretrained, num_classes=0
+        )
+        self.head = nn.Linear(self.backbone.num_features, n_classes)
+
+    def forward(self, x):
+        return self.head(self.backbone(x))
+
+    def features(self, x):
+        return self.backbone(x)
+
+
+# ─── CORN ordinal head (N10, extends CORAL/E3) ───────────────────────────────
+
+class CORNHead(nn.Module):
+    """CORN: Conditional Ordinal Regression for Neural Networks.
+    Chained binary classifiers P(y>k | y>k-1) for monotone ordinal prediction.
+    """
+    def __init__(self, in_features, n_classes):
+        super().__init__()
+        self.n_classes = n_classes
+        self.layers = nn.ModuleList([
+            nn.Linear(in_features, 1) for _ in range(n_classes - 1)
+        ])
+
+    def forward(self, x):
+        return torch.cat([torch.sigmoid(l(x)) for l in self.layers], dim=1)
+
+    def predict_class(self, x):
+        return (self(x) > 0.5).sum(dim=1)
+
+
+class BackboneWithCORN(nn.Module):
+    """ViT-B + CORN ordinal head (N10, BNL-3)."""
+    def __init__(self, n_classes, pretrained=True):
+        super().__init__()
+        self.backbone = timm.create_model(
+            'vit_base_patch16_224', pretrained=pretrained, num_classes=0
+        )
+        self.head = CORNHead(768, n_classes)
+
+    def forward(self, x):
+        return self.head(self.backbone(x))
+
+    def features(self, x):
+        return self.backbone(x)

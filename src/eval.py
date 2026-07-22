@@ -319,3 +319,25 @@ def compute_conformal_sets(proba, labels, cal_proba, cal_labels, alpha=0.05):
         "mean_set_size": float(np.mean(sets)) if sets else float("nan"),
         "target_coverage": 1.0 - alpha,
     }
+
+
+# ─── KNN probe (N8, BNL-3) ───────────────────────────────────────────────────
+
+def knn_probe_eval(train_feats, train_labels, test_feats, test_labels, k=5):
+    """K-nearest neighbour probe of learned representations (N8, BNL-3)."""
+    from sklearn.neighbors import KNeighborsClassifier
+    from sklearn.metrics import roc_auc_score
+
+    knn = KNeighborsClassifier(n_neighbors=min(k, len(train_feats) - 1), metric='cosine')
+    knn.fit(train_feats, train_labels)
+    proba = knn.predict_proba(test_feats)
+    n_classes = proba.shape[1]
+    try:
+        if n_classes > 2:
+            auc = roc_auc_score(test_labels, proba, multi_class='ovr', average='macro')
+        else:
+            auc = roc_auc_score(test_labels, proba[:, 1])
+    except Exception:
+        auc = float('nan')
+    acc = float((knn.predict(test_feats) == test_labels).mean())
+    return {"knn_auc": float(auc), "knn_acc": acc, "k": k}
