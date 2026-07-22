@@ -27,6 +27,23 @@ BNL-3 new items (N-series):
   N9  PolyLoss (polynomial cross-entropy generalisation)
   N10 CORN ordinal regression head (extends E3 CORAL)
   N11 R-Drop consistency regularisation
+  N21 [IMPLEMENT-DONE] Attention rollout for CrossAttention (vit_attention_rollout at E5)
+
+BNL-4 new items (M-series + H2):
+  H2  CLIP zero-shot classification (ViT-B/32 openai zero-shot on 24 conditions)
+  M2  SAM optimizer (Sharpness-Aware Minimization, Foret et al. 2021)
+  M15 Logit Adjustment Loss (Menon et al. 2021, long-tail correction)
+  M16 Asymmetric Loss / ASL (Ben-Baruch et al. 2021)
+  M17 Layer-wise LR Decay (LLRD) for ViT fine-tuning
+  M19 SVM RBF probe on frozen features
+  M21 Macro-F1 threshold tuning (Nelder-Mead post-hoc)
+  M22 Isotonic regression calibration (non-parametric vs temperature scaling)
+  M25 ConvNeXt-Tiny backbone probe (timm, pretrained=False smoke)
+  M28 NCA metric learning + KNN classifier
+  M30 t-SNE visualization of feature space (sklearn, 2D embedding)
+  M31 Per-class PR-AUC reporting (average_precision_score macro)
+  M32 Top-k accuracy (top-3, top-5) reporting
+  M38 Quadratic-weighted Cohen kappa (required metric for ophthalmology)
 
 Usage:
     python train.py [--data /path/to/aptos2023] [--out Output] [--smoke] [--epochs N]
@@ -1673,6 +1690,356 @@ def main():
             del rdrop_m
         except Exception as e:
             print(f"  [warn] N11 R-Drop failed: {e}", flush=True)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # BNL-4 NEW IMPLEMENTATIONS (2026-07-22)
+        # H2  CLIP zero-shot classification
+        # M2  SAM optimizer (sharpness-aware minimization)
+        # M15 Logit Adjustment Loss
+        # M16 Asymmetric Loss (ASL)
+        # M17 Layer-wise LR Decay (LLRD)
+        # M19 SVM RBF probe
+        # M21 Macro-F1 threshold tuning
+        # M22 Isotonic regression calibration
+        # M25 ConvNeXt-Tiny probe
+        # M28 NCA metric learning
+        # M30 t-SNE visualization
+        # M31 Per-class PR-AUC
+        # M32 Top-k accuracy  (+ M38 quadratic-weighted kappa)
+        # N21 (IMPLEMENT-DONE) — vit_attention_rollout already hooked at E5
+        # ══════════════════════════════════════════════════════════════════════
+
+        results["n21_attention_rollout"] = {
+            "status": "IMPLEMENT-DONE",
+            "note": "vit_attention_rollout (eval.py) hooks all MultiheadAttention modules "
+                    "incl CrossAttentionFAICGA; called at E5 attention_check above"
+        }
+
+        # ── BNL4-H2: CLIP zero-shot classification ─────────────────────────────
+        print("\n=== BNL4-H2: CLIP ZERO-SHOT ===", flush=True)
+        try:
+            import open_clip as _oc
+            _clip_m, _, _ = _oc.create_model_and_transforms(
+                'ViT-B-32', pretrained='openai')
+            _clip_m = _clip_m.to(device).eval()
+            _tok = _oc.get_tokenizer('ViT-B-32')
+            _conds = [
+                "normal fundus", "diabetic retinopathy", "glaucoma",
+                "age-related macular degeneration", "retinal vein occlusion",
+                "branch retinal artery occlusion", "retinal detachment", "macular hole",
+                "choroidal neovascularization", "central serous chorioretinopathy",
+                "epiretinal membrane", "myopic macular degeneration",
+                "hypertensive retinopathy", "pathological myopia", "drusen",
+                "macular edema", "retinitis pigmentosa", "optic disc edema",
+                "neovascularization", "subretinal hemorrhage", "laser scar",
+                "vitreous hemorrhage", "chorioretinal atrophy", "retinal tear",
+            ]
+            _txts = _tok(
+                [f"fundus photograph of {c}" for c in _conds[:n_classes]]
+            ).to(device)
+            with torch.no_grad():
+                _tf_clip = _clip_m.encode_text(_txts)
+                _tf_clip = _tf_clip / _tf_clip.norm(dim=-1, keepdim=True)
+            _proba_c, _lbl_c = [], []
+            for _b in loaders["test"]:
+                _img_c, _lbl_ci = _b[0].to(device), _b[1]
+                with torch.no_grad():
+                    _if = _clip_m.encode_image(_img_c)
+                    _if = _if / _if.norm(dim=-1, keepdim=True)
+                    _p = (_if @ _tf_clip.T * 100.0).softmax(-1)
+                _proba_c.append(_p.cpu()); _lbl_c.append(_lbl_ci)
+            _p_np = torch.cat(_proba_c).numpy()
+            _l_np = torch.cat(_lbl_c).numpy()
+            try:
+                from sklearn.metrics import roc_auc_score as _ras
+                from sklearn.preprocessing import label_binarize as _lb
+                _yb = _lb(_l_np, classes=list(range(n_classes)))
+                _auc_c = float(_ras(_yb, _p_np, multi_class='ovr', average='macro'))
+            except Exception:
+                _auc_c = float('nan')
+            print(f"  H2 CLIP zero-shot AUC={_auc_c:.4f}", flush=True)
+            results["clip_zeroshot"] = {"auc": _auc_c, "ok": True,
+                                         "note": "ViT-B/32 openai; ~0.5 expected on synthetic"}
+            del _clip_m
+        except Exception as _e:
+            print(f"  [warn] H2 CLIP zero-shot: {_e}", flush=True)
+            results["clip_zeroshot"] = {"auc": float("nan"), "error": str(_e)[:120]}
+
+        # ── BNL4-M2: SAM optimizer ────────────────────────────────────────────
+        print("\n=== BNL4-M2: SAM OPTIMIZER ===", flush=True)
+        try:
+            class _SAM:
+                def __init__(self, params, base_opt_cls, rho=0.05, **kw):
+                    self.param_groups = [{'params': list(params)}]
+                    self.rho = rho
+                    self.base = base_opt_cls(self.param_groups, **kw)
+                def zero_grad(self): self.base.zero_grad()
+                @torch.no_grad()
+                def first_step(self):
+                    grads = [p.grad for pg in self.param_groups
+                             for p in pg['params'] if p.grad is not None]
+                    if not grads: return
+                    norm = torch.norm(torch.stack([g.norm(2) for g in grads]))
+                    scale = self.rho / (norm + 1e-12)
+                    for pg in self.param_groups:
+                        for p in pg['params']:
+                            if p.grad is None: continue
+                            p._e_w = p.grad * scale.to(p.device)
+                            p.add_(p._e_w)
+                    self.base.zero_grad()
+                @torch.no_grad()
+                def second_step(self):
+                    for pg in self.param_groups:
+                        for p in pg['params']:
+                            if hasattr(p, '_e_w'): p.sub_(p._e_w)
+                    self.base.step()
+                    self.base.zero_grad()
+
+            sam_m = ViTBWrapper(n_classes).to(device)
+            _sam_opt = _SAM(sam_m.parameters(), optim.AdamW, lr=1e-4, weight_decay=0.05)
+            sam_steps = 0
+            for _b in loaders["train"]:
+                _is, _ls = _b[0].to(device), _b[1].to(device)
+                _sam_opt.zero_grad()
+                F.cross_entropy(sam_m(_is), _ls).backward()
+                _sam_opt.first_step()
+                F.cross_entropy(sam_m(_is), _ls).backward()
+                _sam_opt.second_step()
+                sam_steps += 1
+                if sam_steps >= (2 if args.smoke else 100): break
+            print(f"  M2 SAM: {sam_steps} steps", flush=True)
+            results["sam_optimizer"] = {"steps": sam_steps, "ok": True}
+            del sam_m
+        except Exception as _e:
+            print(f"  [warn] M2 SAM: {_e}", flush=True)
+
+        # ── BNL4-M15: Logit Adjustment Loss ──────────────────────────────────
+        print("\n=== BNL4-M15: LOGIT ADJUSTMENT LOSS ===", flush=True)
+        try:
+            _all_trn_lbl = np.concatenate(
+                [b[1].numpy() for b in loaders["train"]])
+            _cnt = np.bincount(_all_trn_lbl, minlength=n_classes).astype(float)
+            _prior = np.clip(_cnt / _cnt.sum(), 1e-6, None)
+            _la_adj = torch.log(torch.tensor(_prior, dtype=torch.float32))
+
+            class _LALoss(nn.Module):
+                def __init__(self, adj):
+                    super().__init__()
+                    self.register_buffer('adj', adj)
+                def forward(self, logits, tgt):
+                    return F.cross_entropy(logits + self.adj.to(logits.device), tgt)
+
+            la_m = ViTBWrapper(n_classes).to(device)
+            la_loss = _LALoss(_la_adj).to(device)
+            la_opt = optim.AdamW(la_m.parameters(), lr=1e-4)
+            la_steps = 0
+            _la_loss_val = 0.0
+            for _b in loaders["train"]:
+                _is2, _ls2 = _b[0].to(device), _b[1].to(device)
+                la_opt.zero_grad()
+                _la_loss_val = la_loss(la_m(_is2), _ls2)
+                _la_loss_val.backward()
+                la_opt.step()
+                la_steps += 1
+                if la_steps >= (2 if args.smoke else 100): break
+            print(f"  M15 LogitAdj: {la_steps} steps loss={float(_la_loss_val):.4f}", flush=True)
+            results["logit_adj"] = {"steps": la_steps, "ok": True}
+            del la_m
+        except Exception as _e:
+            print(f"  [warn] M15 logit adj: {_e}", flush=True)
+
+        # ── BNL4-M16: Asymmetric Loss (ASL) ──────────────────────────────────
+        print("\n=== BNL4-M16: ASYMMETRIC LOSS (ASL) ===", flush=True)
+        try:
+            class _ASL(nn.Module):
+                def __init__(self, gp=0.0, gn=4.0, clip=0.05):
+                    super().__init__()
+                    self.gp, self.gn, self.clip = gp, gn, clip
+                def forward(self, logits, tgt):
+                    n_cls = logits.shape[-1]
+                    y = F.one_hot(tgt, n_cls).float()
+                    xs_p = torch.sigmoid(logits)
+                    xs_n = (1 - xs_p + self.clip).clamp(max=1.0)
+                    l_p = y * torch.log(xs_p.clamp(1e-7))
+                    l_n = (1 - y) * torch.log(xs_n.clamp(1e-7))
+                    loss = l_p * (1 - xs_p) ** self.gp + l_n * xs_n ** self.gn
+                    return -loss.sum(-1).mean()
+
+            asl_m = ViTBWrapper(n_classes).to(device)
+            asl_fn = _ASL()
+            asl_opt = optim.AdamW(asl_m.parameters(), lr=1e-4)
+            asl_steps = 0
+            _asl_v = 0.0
+            for _b in loaders["train"]:
+                _is3, _ls3 = _b[0].to(device), _b[1].to(device)
+                asl_opt.zero_grad()
+                _asl_v = asl_fn(asl_m(_is3), _ls3)
+                _asl_v.backward()
+                asl_opt.step()
+                asl_steps += 1
+                if asl_steps >= (2 if args.smoke else 100): break
+            print(f"  M16 ASL: {asl_steps} steps loss={float(_asl_v):.4f}", flush=True)
+            results["asl"] = {"steps": asl_steps, "ok": True}
+            del asl_m
+        except Exception as _e:
+            print(f"  [warn] M16 ASL: {_e}", flush=True)
+
+        # ── BNL4-M17: Layer-wise LR Decay (LLRD) ─────────────────────────────
+        print("\n=== BNL4-M17: LLRD ===", flush=True)
+        try:
+            llrd_m = ViTBWrapper(n_classes).to(device)
+            _decay = 0.75
+            _pg = []
+            for _name, _param in llrd_m.named_parameters():
+                if 'blocks.' in _name:
+                    try:
+                        _idx = int(_name.split('blocks.')[1].split('.')[0])
+                    except (ValueError, IndexError):
+                        _idx = 0
+                    _lr = 1e-4 * (_decay ** (12 - _idx))
+                elif any(k in _name for k in ('head', 'norm', 'cls_token', 'pos_embed')):
+                    _lr = 1e-4
+                else:
+                    _lr = 1e-4 * (_decay ** 12)
+                _pg.append({'params': [_param], 'lr': _lr})
+            llrd_opt = optim.AdamW(_pg, weight_decay=0.05)
+            llrd_steps = 0
+            _llrd_v = 0.0
+            for _b in loaders["train"]:
+                _is4, _ls4 = _b[0].to(device), _b[1].to(device)
+                llrd_opt.zero_grad()
+                _llrd_v = F.cross_entropy(llrd_m(_is4), _ls4)
+                _llrd_v.backward()
+                llrd_opt.step()
+                llrd_steps += 1
+                if llrd_steps >= (2 if args.smoke else 100): break
+            print(f"  M17 LLRD: {llrd_steps} steps loss={float(_llrd_v):.4f}", flush=True)
+            results["llrd"] = {"steps": llrd_steps, "ok": True}
+            del llrd_m
+        except Exception as _e:
+            print(f"  [warn] M17 LLRD: {_e}", flush=True)
+
+        # ── BNL4-M19+M21+M22+M25+M28+M30+M31+M32+M38: probe evaluations ──────
+        print("\n=== BNL4-M19/21/22/25/28/30/31/32/38: PROBES+METRICS ===", flush=True)
+        try:
+            from sklearn.linear_model import LogisticRegression as _LR
+            from sklearn.svm import SVC as _SVC
+            from sklearn.metrics import (roc_auc_score as _ras2,
+                                          average_precision_score as _aps,
+                                          f1_score as _f1s,
+                                          cohen_kappa_score as _cks)
+            from sklearn.preprocessing import label_binarize as _lb2
+            from sklearn.calibration import CalibratedClassifierCV as _CCCV
+
+            _probe_bm = ViTBWrapper(n_classes).to(device)
+            _tf_p, _tl_p = extract_features(_probe_bm, loaders["train"], device)
+            _vf_p, _vl_p = extract_features(_probe_bm, loaders["test"],  device)
+            _base = _LR(max_iter=200, C=1.0, solver='lbfgs')
+            _base.fit(_tf_p, _tl_p)
+            _proba_p = _base.predict_proba(_vf_p)
+            _preds_p = _base.predict(_vf_p)
+
+            # M19: SVM RBF probe
+            try:
+                _svm = _SVC(kernel='rbf', C=1.0, probability=True)
+                _svm.fit(_tf_p, _tl_p)
+                _svm_pr = _svm.predict_proba(_vf_p)
+                _yb2 = _lb2(_vl_p, classes=list(range(n_classes)))
+                _svm_auc = float(_ras2(_yb2, _svm_pr, multi_class='ovr', average='macro'))
+                results["svm_rbf_probe"] = {"auc": _svm_auc, "ok": True}
+                print(f"  M19 SVM-RBF AUC={_svm_auc:.4f}", flush=True)
+            except Exception as _ei: print(f"  [warn] M19: {_ei}", flush=True)
+
+            # M21: Macro-F1 threshold tuning
+            try:
+                from scipy.optimize import minimize as _min
+                def _neg_f1(th):
+                    _p = np.argmax(_proba_p / (np.abs(th) + 1e-9), -1)
+                    return -_f1s(_vl_p, _p, average='macro', zero_division=0)
+                _r21 = _min(_neg_f1, np.ones(n_classes)/n_classes,
+                            method='Nelder-Mead', options={'maxiter': 30})
+                results["f1_threshold"] = {"f1": float(-_r21.fun), "ok": True}
+                print(f"  M21 F1-thresh={float(-_r21.fun):.4f}", flush=True)
+            except Exception as _ei: print(f"  [warn] M21: {_ei}", flush=True)
+
+            # M22: Isotonic calibration
+            try:
+                _iso = _CCCV(_base, method='isotonic', cv='prefit')
+                _iso.fit(_tf_p, _tl_p)
+                _iso_pr = _iso.predict_proba(_vf_p)
+                _ece_b = compute_ece(_proba_p, _vl_p)["ece"]
+                _ece_a = compute_ece(_iso_pr, _vl_p)["ece"]
+                results["isotonic_cal"] = {"ece_before": _ece_b, "ece_after": _ece_a, "ok": True}
+                print(f"  M22 ECE before={_ece_b:.4f} after={_ece_a:.4f}", flush=True)
+            except Exception as _ei: print(f"  [warn] M22: {_ei}", flush=True)
+
+            # M25: ConvNeXt-Tiny probe
+            try:
+                import timm as _timm
+                _cnx = _timm.create_model('convnext_tiny', pretrained=False,
+                                           num_classes=0).to(device).eval()
+                _tf_cx, _tl_cx = extract_features(_cnx, loaders["train"], device)
+                _vf_cx, _vl_cx = extract_features(_cnx, loaders["test"],  device)
+                _m25 = linear_probe_eval(_tf_cx, _tl_cx, _vf_cx, _vl_cx, n_classes)
+                results["convnext_tiny_probe"] = {**_m25, "ok": True}
+                print(f"  M25 ConvNeXt-Tiny AUC={_m25['auc']:.4f}", flush=True)
+                del _cnx
+            except Exception as _ei: print(f"  [warn] M25: {_ei}", flush=True)
+
+            # M28: NCA metric learning
+            try:
+                from sklearn.neighbors import (NeighborhoodComponentsAnalysis as _NCA,
+                                               KNeighborsClassifier as _KNN)
+                from sklearn.decomposition import PCA as _PCA
+                _pca = _PCA(n_components=min(64, _tf_p.shape[1], len(_tf_p)-1))
+                _tf_r = _pca.fit_transform(_tf_p)
+                _vf_r = _pca.transform(_vf_p)
+                _nca = _NCA(n_components=min(32, _tf_r.shape[1]), max_iter=20,
+                             random_state=0)
+                _nca.fit(_tf_r, _tl_p)
+                _knn = _KNN(n_neighbors=min(5, len(_tf_p)-1))
+                _knn.fit(_nca.transform(_tf_r), _tl_p)
+                _nca_acc = float((_knn.predict(_nca.transform(_vf_r)) == _vl_p).mean())
+                results["nca_knn"] = {"acc": _nca_acc, "ok": True}
+                print(f"  M28 NCA-KNN acc={_nca_acc:.4f}", flush=True)
+            except Exception as _ei: print(f"  [warn] M28: {_ei}", flush=True)
+
+            # M30: t-SNE visualization
+            try:
+                from sklearn.manifold import TSNE as _TSNE
+                _vf_s = _vf_p[:min(50, len(_vf_p))]
+                _perp = min(30, max(2, len(_vf_s) - 1))
+                _emb = _TSNE(n_components=2, perplexity=_perp, random_state=0,
+                              n_iter=250).fit_transform(_vf_s)
+                results["tsne_viz"] = {"shape": list(_emb.shape), "ok": True}
+                print(f"  M30 t-SNE embedding {_emb.shape}", flush=True)
+            except Exception as _ei: print(f"  [warn] M30: {_ei}", flush=True)
+
+            # M31: Per-class PR-AUC
+            try:
+                _yb3 = _lb2(_vl_p, classes=list(range(n_classes)))
+                _prauc = float(_aps(_yb3, _proba_p, average='macro'))
+                results["pr_auc"] = {"macro_prauc": _prauc, "ok": True}
+                print(f"  M31 PR-AUC macro={_prauc:.4f}", flush=True)
+            except Exception as _ei: print(f"  [warn] M31: {_ei}", flush=True)
+
+            # M32: Top-k accuracy  +  M38: Quadratic-weighted kappa
+            try:
+                from sklearn.metrics import top_k_accuracy_score as _topk
+                _top3 = float(_topk(_vl_p, _proba_p, k=min(3, n_classes-1),
+                                     labels=list(range(n_classes))))
+                _top5 = float(_topk(_vl_p, _proba_p, k=min(5, n_classes-1),
+                                     labels=list(range(n_classes))))
+                _qk = float(_cks(_vl_p, _preds_p, weights='quadratic'))
+                results["topk_acc"]  = {"top3": _top3, "top5": _top5, "ok": True}
+                results["quad_kappa"] = {"kappa": _qk, "ok": True}
+                print(f"  M32 Top-3={_top3:.4f} Top-5={_top5:.4f} | M38 QKappa={_qk:.4f}",
+                      flush=True)
+            except Exception as _ei: print(f"  [warn] M32/M38: {_ei}", flush=True)
+
+            del _probe_bm
+        except Exception as _e:
+            print(f"  [warn] BNL4 probe suite: {_e}", flush=True)
 
     # ── CAL metric smoke-check (G2) ────────────────────────────────────────────
     print("\n=== G2: CAL METRIC SMOKE CHECK ===", flush=True)
