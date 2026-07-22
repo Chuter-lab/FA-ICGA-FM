@@ -703,7 +703,7 @@ class EfficientNetV2SWrapper(nn.Module):
     def __init__(self, n_classes, pretrained=True):
         super().__init__()
         self.backbone = timm.create_model(
-            'efficientnetv2_s', pretrained=pretrained, num_classes=0, global_pool='avg'
+            'tf_efficientnetv2_s', pretrained=pretrained, num_classes=0, global_pool='avg'
         )
         self.head = nn.Linear(self.backbone.num_features, n_classes)
 
