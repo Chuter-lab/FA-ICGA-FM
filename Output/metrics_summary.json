@@ -1,0 +1,268 @@
+{
+  "vitb": {
+    "auc": 0.7840368686581227,
+    "acc": 0.10714285714285714,
+    "f1": 0.03931451612903226,
+    "kappa": 0.07284768211920534
+  },
+  "swinb": {
+    "auc": 0.4591873119481333,
+    "acc": 0.03571428571428571,
+    "f1": 0.016975308641975308,
+    "kappa": 0.0016507098052163105
+  },
+  "convnextb": {
+    "auc": 0.729568847542511,
+    "acc": 0.07142857142857142,
+    "f1": 0.02711640211640211,
+    "kappa": 0.026737967914438387
+  },
+  "retfound": {
+    "auc": 0.7205908230209932,
+    "acc": 0.07142857142857142,
+    "f1": 0.010715914272685818,
+    "kappa": 0.029333333333333322
+  },
+  "biomedclip": {
+    "auc": 0.6951445142453977,
+    "acc": 0.08928571428571429,
+    "f1": 0.05717592592592593,
+    "kappa": 0.052736318407960114
+  },
+  "dinov2_linear": {
+    "auc": 0.679453127462862,
+    "acc": 0.05357142857142857,
+    "f1": 0.075,
+    "kappa": 0.006028131279303239
+  },
+  "dinov2_ft": {
+    "auc": 0.7818394868472328,
+    "acc": 0.017857142857142856,
+    "f1": 0.001984126984126984,
+    "kappa": -0.00983606557377037
+  },
+  "phase_vit": {
+    "auc": 0.7285046700175722,
+    "acc": 0.07142857142857142,
+    "f1": 0.016290726817042606,
+    "kappa": 0.02771285475792995
+  },
+  "few_shot": {
+    "5": {
+      "mean": 0.07738095238095238,
+      "std": 0.06070261325705697,
+      "n_seeds": 3
+    },
+    "10": {
+      "mean": 0.09523809523809523,
+      "std": 0.016835875742536845,
+      "n_seeds": 3
+    },
+    "25": {
+      "mean": 0.05357142857142857,
+      "std": 0.0,
+      "n_seeds": 3
+    }
+  },
+  "attention_check": {
+    "shape": [
+      14,
+      14
+    ],
+    "ok": true
+  },
+  "iqa_check": {
+    "ok": true
+  },
+  "ensemble": {
+    "selected": [
+      "vitb"
+    ],
+    "auc_gain": NaN
+  },
+  "aptos_baseline_note": {
+    "reference": "medRxiv:10.1101/2023.11.26.23299021",
+    "task": "APTOS 2023 multi-label classification baseline",
+    "note": "Baseline replication requires APTOS 2023 test labels. Architecture: ResNet-50 + ImageNet pretrain. Comparison reported in Table 1 when real data available."
+  },
+  "h4_cutmix_mixup": {
+    "steps": 2,
+    "ok": true
+  },
+  "h5_label_smooth_temp": {
+    "temperature": 1.2193022966384888,
+    "ok": true
+  },
+  "h6_mc_dropout": {
+    "n_passes": 5,
+    "mean_uncertainty": 0.0,
+    "ok": true
+  },
+  "h10_fourier_aug": {
+    "ok": true
+  },
+  "h12_focal_loss": {
+    "steps": 2,
+    "ok": true
+  },
+  "h14_curriculum": {
+    "n_sorted": "24",
+    "ok": true
+  },
+  "h15_gradcampp": {
+    "cam_shape": [
+      7,
+      7
+    ],
+    "ok": true
+  },
+  "h16_conformal": {
+    "q_hat": 0.997203528881073,
+    "coverage": 1.0,
+    "mean_set_size": 24.0,
+    "target_coverage": 0.95
+  },
+  "h17_swa": {
+    "ok": true,
+    "swa_epochs": 1
+  },
+  "h18_cross_attn": {
+    "fused_dim": 768,
+    "ok": true
+  },
+  "h22_vit_fpn": {
+    "output_shape": [
+      1,
+      24
+    ],
+    "ok": true
+  },
+  "h23_ece": {
+    "ece": 0.04752562514373235,
+    "bin_confs": [
+      0.0,
+      0.11895419657230377,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "bin_accs": [
+      0.0,
+      0.07142857142857142,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "bin_counts": [
+      0,
+      56,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "h24_phase_aug": {
+    "mean_diff": 0.2982456386089325,
+    "ok": true
+  },
+  "effv2s": {
+    "auc": 0.6584190021545506,
+    "acc": 0.07142857142857142,
+    "f1": 0.05866402116402116,
+    "kappa": 0.026737967914438387
+  },
+  "deit3b": {
+    "auc": 0.6617970746265697,
+    "acc": 0.05357142857142857,
+    "f1": 0.019305555555555555,
+    "kappa": 0.01296973727968087
+  },
+  "maxvit": {
+    "auc": 0.5549755770026071,
+    "acc": 0.03571428571428571,
+    "f1": 0.016534391534391533,
+    "kappa": -0.011371237458194017
+  },
+  "deep_ensemble": {
+    "auc": NaN,
+    "n_seeds": 3,
+    "ok": true
+  },
+  "ema": {
+    "ok": true,
+    "output_shape": [
+      1,
+      24
+    ]
+  },
+  "supcon": {
+    "steps": 2,
+    "ok": true
+  },
+  "knn_probe": {
+    "knn_auc": NaN,
+    "knn_acc": 0.14285714285714285,
+    "k": 5
+  },
+  "polyloss": {
+    "steps": 2,
+    "ok": true
+  },
+  "corn": {
+    "steps": 2,
+    "output_shape": [
+      1,
+      23
+    ],
+    "ok": true
+  },
+  "rdrop": {
+    "steps": 2,
+    "ok": true
+  },
+  "n21_attention_rollout": {
+    "status": "IMPLEMENT-DONE",
+    "note": "vit_attention_rollout (eval.py) hooks all MultiheadAttention modules incl CrossAttentionFAICGA; called at E5 attention_check above"
+  },
+  "clip_zeroshot": {
+    "auc": 0.5351464132991602,
+    "ok": true,
+    "note": "ViT-B/32 openai; ~0.5 expected on synthetic"
+  },
+  "sam_optimizer": {
+    "steps": 2,
+    "ok": true
+  },
+  "logit_adj": {
+    "steps": 2,
+    "ok": true
+  },
+  "fedavg_sim": {
+    "auc": NaN,
+    "error": "CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 23.55 GiB of which 17.62 MiB is free. Inc"
+  },
+  "cal_check": {
+    "CAL": 0.9221204007815477,
+    "Dice": 0.5005663633346558,
+    "ok": true
+  },
+  "interpreffa_note": {
+    "reference": "PMC12222453 (npj Digital Medicine 2025)",
+    "note": "InterpreFFA is the SOTA contrastive learning for FFA interpretation. Our FA+ICGA cross-modal contrastive (C1) extends this paradigm to dual-modality. Comparison table to be populated with APTOS 2023 data."
+  }
+}
