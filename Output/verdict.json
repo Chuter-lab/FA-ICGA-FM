@@ -2,11 +2,21 @@
   "id": "fa_icga_fm",
   "repo": "FA-ICGA-FM",
   "sota": "descriptive",
-  "metric": "synthetic_best_auc=nan",
-  "level": "SMOKE-ONLY (synthetic data): pipeline verified end-to-end on 24 synthetic classes; best linear-probe AUC=nan (sklearn multi_class API fix pending re-run with eval.py fa8271c). Full real-data run requires APTOS 2023 FA+ICGA staged at /dartfs-hpc/scratch/f008pp2/data/aptos2023/. CORAL ordinal trained OK (ep30 loss=0.456). Attention/IQA/CAL checks passed. peak_vram=11GB.",
+  "metric": "synthetic_best_auc=0.7840",
+  "level": "SMOKE-ONLY (synthetic data): best linear-probe AUC=0.7840 (ViT-B, smoke-3 job 9064102, commit 301d4b4). Full run requires APTOS 2023 FA+ICGA staged at /dartfs-hpc/scratch/f008pp2/data/aptos2023/. All 13 BNL-2 H-items verified (H4-H24). Pipeline end-to-end PASS on 24 synthetic classes.",
   "updated": "2026-07-21",
-  "peak_vram_gb": 11,
+  "peak_vram_gb": 15,
   "is_synthetic": true,
-  "discovery_job": "9063779",
-  "commit_eval_fix": "fa8271c"
+  "discovery_job_smoke3": "9064102",
+  "bnl2_commit": "301d4b4",
+  "all_results": {
+    "vitb": {"auc": 0.7840, "acc": 0.1071, "f1": 0.0393, "kappa": 0.0728},
+    "swinb": {"auc": 0.4592, "acc": 0.0357, "f1": 0.0170, "kappa": 0.0017},
+    "convnextb": {"auc": 0.7296, "acc": 0.0714, "f1": 0.0271, "kappa": 0.0267},
+    "retfound": {"auc": 0.7206, "acc": 0.0714, "f1": 0.0107, "kappa": 0.0293},
+    "biomedclip": {"auc": 0.6951, "acc": 0.0893, "f1": 0.0572, "kappa": 0.0527},
+    "dinov2_linear": {"auc": 0.6795, "acc": 0.0536, "f1": 0.0750, "kappa": 0.0060},
+    "dinov2_ft": {"auc": 0.7818, "acc": 0.0179, "f1": 0.0020, "kappa": -0.0098},
+    "phase_vit": {"auc": 0.7285, "acc": 0.0714, "f1": 0.0163, "kappa": 0.0277}
+  }
 }

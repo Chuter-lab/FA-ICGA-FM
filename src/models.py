@@ -425,6 +425,11 @@ class CORALHead(nn.Module):
     """CORAL ordinal regression head for disease severity (E3).
 
     Compatible with any backbone returning a feature vector.
+
+    R8 caveat: CORAL assumes a single underlying ordinal scale. Not all 24 APTOS
+    conditions map to a single severity ordering. When APTOS 2023 data is staged,
+    audit which conditions are genuinely ordinal and consider per-condition heads
+    or a multi-label approach for non-ordinal conditions.
     """
 
     def __init__(self, in_features, n_classes):
