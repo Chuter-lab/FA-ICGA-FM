@@ -1,0 +1,39 @@
+{
+  "study": "FA-ICGA-FM",
+  "description": "Foundation model for fluorescein angiography (FA) and ICG angiography (ICGA) classification across 24 APTOS 2023 retinal conditions",
+  "dataset": {
+    "name": "APTOS 2023 FA+ICGA",
+    "source": "Alibaba Tianchi competition",
+    "n_images": 58000,
+    "n_classes": 24,
+    "modalities": ["fluorescein angiography (FA)", "ICG angiography (ICGA)"],
+    "staging_status": "NOT YET STAGED on Discovery HPC",
+    "expected_path": "/dartfs-hpc/scratch/f008pp2/data/aptos2023/",
+    "access": "competition dataset; verify license before redistribution"
+  },
+  "current_run_status": "SMOKE-ONLY",
+  "smoke_data": {
+    "type": "synthetic",
+    "n_train": 2000,
+    "n_val": 400,
+    "n_test": 400,
+    "generator": "SyntheticFADataset (concentric-ring patterns, random class labels)",
+    "seed": 42
+  },
+  "results": {
+    "smoke3_job": "9064102",
+    "smoke3_commit": "301d4b4",
+    "best_backbone": "vitb",
+    "synthetic_best_auc": 0.7840,
+    "verdict": "descriptive",
+    "note": "AUC on synthetic random-label data is not meaningful; pipeline is verified end-to-end"
+  },
+  "known_limitations": {
+    "R8_coral_conditions": "CORALHead applied to all 24 conditions; not all APTOS conditions have a single ordinal severity ordering — audit required when real data staged",
+    "R9_probe_imbalance": "linear_probe_eval supports n_labeled_per_class equalization (optional param); set when real data is imbalanced",
+    "R2_temporal": "temporal ordering (early/late phase) not validated — requires real FA/ICGA sequences",
+    "R3_registration": "FA-ICGA cross-modal registration not validated — requires real paired images",
+    "R5_rater_agreement": "multi-rater agreement statistics unavailable — requires real annotation metadata"
+  },
+  "updated": "2026-07-21"
+}

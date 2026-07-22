@@ -41,11 +41,27 @@ def extract_features(backbone, loader, device, n_max=None):
     return torch.cat(feats).numpy(), torch.cat(labels).numpy()
 
 
-def linear_probe_eval(train_feats, train_labels, test_feats, test_labels, n_classes):
+def linear_probe_eval(train_feats, train_labels, test_feats, test_labels, n_classes,
+                      n_labeled_per_class=None):
     """Fit logistic regression on frozen features, compute AUC-ROC and accuracy.
+
+    n_labeled_per_class: if set, subsample at most this many training examples per
+    class before fitting — equalizes class representation for imbalanced real data
+    (R9). Has no effect when training labels are already balanced (e.g. synthetic).
 
     Returns dict with auc, acc, f1, kappa.
     """
+    if n_labeled_per_class is not None:
+        rng = np.random.default_rng(0)
+        keep = []
+        for cls in range(n_classes):
+            idx = np.where(train_labels == cls)[0]
+            if len(idx) > n_labeled_per_class:
+                idx = rng.choice(idx, size=n_labeled_per_class, replace=False)
+            keep.append(idx)
+        keep = np.concatenate(keep)
+        train_feats  = train_feats[keep]
+        train_labels = train_labels[keep]
     clf = LogisticRegression(max_iter=1000, C=1.0, solver="lbfgs")
     clf.fit(train_feats, train_labels)
     preds = clf.predict(test_feats)
