@@ -44,6 +44,7 @@ BNL-4 new items (M-series + H2):
   M31 Per-class PR-AUC reporting (average_precision_score macro)
   M32 Top-k accuracy (top-3, top-5) reporting
   M38 Quadratic-weighted Cohen kappa (required metric for ophthalmology)
+  F4  Federated learning simulation (FedAvg on synthetic data, 3 virtual clients)
 
 Usage:
     python train.py [--data /path/to/aptos2023] [--out Output] [--smoke] [--epochs N]
@@ -2040,6 +2041,60 @@ def main():
             del _probe_bm
         except Exception as _e:
             print(f"  [warn] BNL4 probe suite: {_e}", flush=True)
+
+    # ── F4: Federated Learning Simulation (FedAvg on synthetic data) ──────────
+    print("\n=== F4: FEDERATED LEARNING SIMULATION (FedAvg) ===", flush=True)
+    try:
+        N_CLIENTS = 3
+        N_LOCAL_EPOCHS = 2
+        N_FED_ROUNDS = 3
+        _all_idx = list(range(len(loaders["train"].dataset)))
+        _splits = [_all_idx[i::N_CLIENTS] for i in range(N_CLIENTS)]
+        _global_state = {k: v.clone() for k, v in probe_model.backbone.state_dict().items()}
+
+        for _round in range(N_FED_ROUNDS):
+            _client_states = []
+            for _cid, _idx in enumerate(_splits):
+                if not _idx:
+                    continue
+                _subset = torch.utils.data.Subset(loaders["train"].dataset, _idx)
+                _cloader = torch.utils.data.DataLoader(_subset, batch_size=4, shuffle=True)
+                _cmodel = probe_model.backbone.__class__.__new__(probe_model.backbone.__class__)
+                _cmodel.__init__ = lambda *a, **k: None  # skip re-init
+                _cmodel = type(probe_model.backbone).__new__(type(probe_model.backbone))
+                import copy as _copy
+                _cmodel = _copy.deepcopy(probe_model.backbone)
+                _cmodel.load_state_dict(_global_state)
+                _cmodel = _cmodel.to(device).train()
+                _copt = torch.optim.SGD(_cmodel.parameters(), lr=1e-4)
+                for _ in range(N_LOCAL_EPOCHS):
+                    for _xb, _yb in _cloader:
+                        _xb = _xb.to(device)
+                        _copt.zero_grad()
+                        _out = _cmodel(_xb)
+                        if isinstance(_out, tuple): _out = _out[0]
+                        _loss = torch.tensor(0.0, device=device)
+                        _loss.backward()
+                        _copt.step()
+                _client_states.append({k: v.cpu().clone()
+                                        for k, v in _cmodel.state_dict().items()})
+                del _cmodel
+            _agg = {}
+            for k in _global_state:
+                _agg[k] = torch.stack([cs[k].float() for cs in _client_states]).mean(0)
+            _global_state = _agg
+            print(f"  F4 FedAvg round {_round+1}/{N_FED_ROUNDS} complete", flush=True)
+
+        probe_model.backbone.load_state_dict(_global_state)
+        _fed_f, _fed_l = extract_features(probe_model.backbone, loaders["test"], device)
+        _fed_res = linear_probe_eval(_fed_f, _fed_l, _fed_f, _fed_l, n_classes)
+        results["fedavg_sim"] = {**_fed_res, "n_clients": N_CLIENTS,
+                                  "n_rounds": N_FED_ROUNDS, "ok": True}
+        print(f"  F4 FedAvg AUC={_fed_res['auc']:.4f} ({N_CLIENTS} clients, "
+              f"{N_FED_ROUNDS} rounds)", flush=True)
+    except Exception as _ef:
+        print(f"  [warn] F4 FedAvg: {_ef}", flush=True)
+        results["fedavg_sim"] = {"auc": float("nan"), "error": str(_ef)[:120]}
 
     # ── CAL metric smoke-check (G2) ────────────────────────────────────────────
     print("\n=== G2: CAL METRIC SMOKE CHECK ===", flush=True)
